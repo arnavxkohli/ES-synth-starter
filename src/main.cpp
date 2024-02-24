@@ -47,7 +47,8 @@ volatile uint32_t currentStepSize = 0;
 const char* notePlayed = "Play a note...";
 
 struct {
-std::bitset<32> inputs;
+  std::bitset<32> inputs;
+  SemaphoreHandle_t mutex; 
 } sysState;
 
 //Display driver object
@@ -108,6 +109,12 @@ void scanKeysTask(void * pvParameters) {
     uint32_t localCurrentStepSize = 0;
     const char* localNotePlayed = __atomic_load_n(&notePlayed, __ATOMIC_RELAXED);
 
+    /*
+    You can potentially define a local inputs variable, which would carry the state of the keyboard matrix and also be used to play the note. The lock can then be acquired at the end of this function, just to assign sysState.inputs the value of your local array using memcpy or std::copy(). The semaphore is not used yet, because inputs is never read by the displayUpdate thread.
+    */
+
+    // xSemaphoreTake(sysState.mutex, portMAX_DELAY);
+
     for(int row = 0; row < 3; row++){
       setRow(row);
       delayMicroseconds(3);
@@ -119,9 +126,11 @@ void scanKeysTask(void * pvParameters) {
     for(int i = 0; i < 12; i++){
       if(sysState.inputs[i]){
         localCurrentStepSize = stepSizes[i];
-        localNotePlayed = notes[i]; // atomic store the note played? This is not accessed anywhere else.
+        localNotePlayed = notes[i];
       }
     }
+
+    // xSemaphoreGive(sysState.mutex);
 
     __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
     __atomic_store_n(&notePlayed, localNotePlayed, __ATOMIC_RELAXED);
@@ -139,11 +148,17 @@ void displayUpdateTask(void * pvParameters){
 
     //Update display
     u8g2.clearBuffer();         // clear the internal memory
+
     u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font
-    // u8g2.drawStr(2,10,"Hello World!");  // write something to the internal memory
-    // u8g2.setCursor(2,20);
-    // u8g2.print(inputs.to_ulong(),HEX);
-    u8g2.drawStr(2, 10, localNotePlayed);
+    u8g2.drawStr(2, 10, "Music Synth");  // write something to the internal memory
+    // u8g2.setCursor(2, 20);
+
+    // xSemaphoreTake(sysState.mutex, portMAX_DELAY);
+    // u8g2.print(sysState.inputs.to_ulong(), HEX);
+    // xSemaphoreGive(sysState.mutex);
+
+    u8g2.drawStr(2, 20, localNotePlayed);
+
     u8g2.sendBuffer();          // transfer internal memory to the display
 
     //Toggle LED
@@ -208,6 +223,8 @@ void setup() {
     2,			/* Task priority */
     &scanKeysHandle /* Pointer to store the task handle */
   );
+
+  sysState.mutex = xSemaphoreCreateMutex();
 
   vTaskStartScheduler();
 }
