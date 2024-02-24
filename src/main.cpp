@@ -1,8 +1,9 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
-#include <_types/_uint32_t.h>
 #include <bitset>
 #include <cmath>
+#include <STM32FreeRTOS.h>
+#include <cstddef>
 
 //Constants
 const uint32_t interval = 100; //Display update interval
@@ -43,6 +44,11 @@ const char* notes[] = {"C", "C#", "D", "D#", "E", "F",
                        "F#", "G", "G#", "A", "A#", "B"};
 
 volatile uint32_t currentStepSize = 0;
+const char* notePlayed = "Play a note...";
+
+struct {
+std::bitset<32> inputs;
+} sysState;
 
 //Display driver object
 U8G2_SSD1305_128X32_NONAME_F_HW_I2C u8g2(U8G2_R0);
@@ -81,33 +87,68 @@ void setRow(uint8_t rowIdx){
   digitalWrite(REN_PIN, HIGH);
 }
 
-std::bitset<32> setInputs(){
-  std::bitset<32> inputs;
-
-  for(int row = 0; row < 3; row++){
-    setRow(row);
-
-    delayMicroseconds(3);
-
-    std::bitset<4> colInput = readCols();
-
-    int startPos = row * 4;
-    for (int bit = 0; bit < 4; ++bit) {
-        inputs[startPos + bit] = colInput[bit];
-    }
-  }
-
-  return inputs;
-}
-
 void sampleISR(){
   static uint32_t phaseAcc = 0;
   uint32_t localCurrentStepSize = __atomic_load_n(&currentStepSize, __ATOMIC_RELAXED);
-  phaseAcc += currentStepSize;
+
+  phaseAcc += localCurrentStepSize;
 
   int32_t Vout = (phaseAcc >> 24) - 128;
 
   analogWrite(OUTR_PIN, Vout + 128);
+}
+
+void scanKeysTask(void * pvParameters) {
+  const TickType_t xFrequency = 50/portTICK_PERIOD_MS;
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+
+  while(1){
+    vTaskDelayUntil( &xLastWakeTime, xFrequency );
+
+    uint32_t localCurrentStepSize = 0;
+    const char* localNotePlayed = __atomic_load_n(&notePlayed, __ATOMIC_RELAXED);
+
+    for(int row = 0; row < 3; row++){
+      setRow(row);
+      delayMicroseconds(3);
+      for (int bit = 0; bit < 4; ++bit) {
+          sysState.inputs[row * 4 + bit] = readCols()[bit];
+      }
+    }
+
+    for(int i = 0; i < 12; i++){
+      if(sysState.inputs[i]){
+        localCurrentStepSize = stepSizes[i];
+        localNotePlayed = notes[i]; // atomic store the note played? This is not accessed anywhere else.
+      }
+    }
+
+    __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
+    __atomic_store_n(&notePlayed, localNotePlayed, __ATOMIC_RELAXED);
+  }
+}
+
+void displayUpdateTask(void * pvParameters){
+  const TickType_t xFrequency = 100/portTICK_PERIOD_MS;
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+
+  while(1){
+    vTaskDelayUntil( &xLastWakeTime, xFrequency );
+
+    const char* localNotePlayed = __atomic_load_n(&notePlayed, __ATOMIC_RELAXED);
+
+    //Update display
+    u8g2.clearBuffer();         // clear the internal memory
+    u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font
+    // u8g2.drawStr(2,10,"Hello World!");  // write something to the internal memory
+    // u8g2.setCursor(2,20);
+    // u8g2.print(inputs.to_ulong(),HEX);
+    u8g2.drawStr(2, 10, localNotePlayed);
+    u8g2.sendBuffer();          // transfer internal memory to the display
+
+    //Toggle LED
+    digitalToggle(LED_BUILTIN);
+  }
 }
 
 void setup() {
@@ -139,7 +180,6 @@ void setup() {
 
   //Initialise UART
   Serial.begin(9600);
-  Serial.println("Hello World");
 
   TIM_TypeDef *Instance = TIM1;
   HardwareTimer *sampleTimer = new HardwareTimer(Instance);
@@ -147,40 +187,31 @@ void setup() {
   sampleTimer->setOverflow(22000, HERTZ_FORMAT);
   sampleTimer->attachInterrupt(sampleISR);
   sampleTimer->resume();
+
+  TaskHandle_t scanKeysHandle = NULL;
+  TaskHandle_t displayUpdateHandle = NULL;
+
+  xTaskCreate(
+    displayUpdateTask, /* Function that implements the task */
+    "displayUpdate", /* Text name for the task */
+    256, /* Stack size in words, not bytes */
+    NULL, /* Parameter passed into the task */
+    1, /* Task priority */
+    &displayUpdateHandle /* Pointer to store the task handle */
+  );
+
+  xTaskCreate(
+    scanKeysTask,		/* Function that implements the task */
+    "scanKeys",		/* Text name for the task */
+    64,      		/* Stack size in words, not bytes */
+    NULL,			/* Parameter passed into the task */
+    2,			/* Task priority */
+    &scanKeysHandle /* Pointer to store the task handle */
+  );
+
+  vTaskStartScheduler();
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
-  static uint32_t next = millis();
-  static uint32_t count = 0;
-  std::bitset<32> inputs = setInputs();
-  const char* notePlayed = "Play a note...";
-
-  uint32_t localCurrentStepSize = 0;
-
-  for(int i = 0; i < 12; i++){
-    if(inputs[i]){
-      localCurrentStepSize = stepSizes[i];
-      notePlayed = notes[i];
-    }
-  }
-
-  __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
-
-  while (millis() < next);  //Wait for next interval
-
-  next += interval;
-
-  //Update display
-  u8g2.clearBuffer();         // clear the internal memory
-  u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font
-  u8g2.drawStr(2,10,"Hello World!");  // write something to the internal memory
-  // u8g2.setCursor(2,20);
-  // u8g2.print(inputs.to_ulong(),HEX);
-  u8g2.drawStr(2,20,notePlayed);
-  u8g2.sendBuffer();          // transfer internal memory to the display
-
-  //Toggle LED
-  digitalToggle(LED_BUILTIN);
-
 }
