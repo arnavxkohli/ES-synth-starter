@@ -3,7 +3,7 @@
 #include <bitset>
 #include <cmath>
 #include <STM32FreeRTOS.h>
-#include <cstddef>
+#include <string>
 
 //Constants
 const uint32_t interval = 100; //Display update interval
@@ -48,7 +48,8 @@ const char* notePlayed = "Play a note...";
 
 struct {
   std::bitset<32> inputs;
-  SemaphoreHandle_t mutex; 
+  SemaphoreHandle_t mutex;
+  uint8_t rotation;
 } sysState;
 
 //Display driver object
@@ -69,10 +70,10 @@ void setOutMuxBit(const uint8_t bitIdx, const bool value) {
 std::bitset<4> readCols(){
   std::bitset<4> result;
 
-  result[0] = !digitalRead(C0_PIN);
-  result[1] = !digitalRead(C1_PIN);
-  result[2] = !digitalRead(C2_PIN);
-  result[3] = !digitalRead(C3_PIN);
+  result[0] = digitalRead(C0_PIN);
+  result[1] = digitalRead(C1_PIN);
+  result[2] = digitalRead(C2_PIN);
+  result[3] = digitalRead(C3_PIN);
 
   return result;
 }
@@ -91,17 +92,25 @@ void setRow(uint8_t rowIdx){
 void sampleISR(){
   static uint32_t phaseAcc = 0;
   uint32_t localCurrentStepSize = __atomic_load_n(&currentStepSize, __ATOMIC_RELAXED);
+  uint8_t localRotation = __atomic_load_n(&sysState.rotation, __ATOMIC_RELAXED);
 
   phaseAcc += localCurrentStepSize;
 
   int32_t Vout = (phaseAcc >> 24) - 128;
 
+
+  // localRotation used for volume before or after the 128?
+  Vout = Vout >> (8 - localRotation);
+
   analogWrite(OUTR_PIN, Vout + 128);
 }
 
 void scanKeysTask(void * pvParameters) {
-  const TickType_t xFrequency = 50/portTICK_PERIOD_MS;
+  const TickType_t xFrequency = 20/portTICK_PERIOD_MS;
   TickType_t xLastWakeTime = xTaskGetTickCount();
+  std::string BA3_prev = "00";
+  std::string BA3_curr;
+  bool incrementLast = true;
 
   while(1){
     vTaskDelayUntil( &xLastWakeTime, xFrequency );
@@ -113,25 +122,52 @@ void scanKeysTask(void * pvParameters) {
     You can potentially define a local inputs variable, which would carry the state of the keyboard matrix and also be used to play the note. The lock can then be acquired at the end of this function, just to assign sysState.inputs the value of your local array using memcpy or std::copy(). The semaphore is not used yet, because inputs is never read by the displayUpdate thread.
     */
 
-    // xSemaphoreTake(sysState.mutex, portMAX_DELAY);
+    xSemaphoreTake(sysState.mutex, portMAX_DELAY);
+    std::bitset<32> localInputs = sysState.inputs;
+    uint8_t localRotation = sysState.rotation;
+    xSemaphoreGive(sysState.mutex);
 
-    for(int row = 0; row < 3; row++){
+    for(int row = 0; row < 4; row++){
       setRow(row);
       delayMicroseconds(3);
       for (int bit = 0; bit < 4; ++bit) {
-          sysState.inputs[row * 4 + bit] = readCols()[bit];
+          localInputs[row * 4 + bit] = readCols()[bit];
       }
     }
 
+    BA3_curr = std::to_string(localInputs[13]) + std::to_string(localInputs[12]);
+
+    if (BA3_prev + BA3_curr == "0001" || BA3_prev + BA3_curr == "1110" || BA3_prev + BA3_curr == "1100") {
+      localRotation = localRotation < 8 ? localRotation + 1 : localRotation;
+      incrementLast = true;
+    }
+
+    if (BA3_prev + BA3_curr == "0100" || BA3_prev + BA3_curr == "1011") {
+      localRotation = localRotation > 0 ? localRotation - 1 : localRotation;
+      incrementLast = false;
+    }
+
+    if(BA3_prev + BA3_curr == "1100" || BA3_prev + BA3_curr == "1001" || BA3_prev + BA3_curr == "0110" || BA3_prev + BA3_curr == "0011"){
+      if(incrementLast){
+        localRotation = localRotation < 8 ? localRotation + 1 : localRotation;
+      } else {
+        localRotation = localRotation > 0 ? localRotation - 1 : localRotation;
+      }
+    }
+
+    BA3_prev = BA3_curr;
+
     for(int i = 0; i < 12; i++){
-      if(sysState.inputs[i]){
+      if(!localInputs[i]){
         localCurrentStepSize = stepSizes[i];
         localNotePlayed = notes[i];
       }
     }
 
-    // xSemaphoreGive(sysState.mutex);
-
+    xSemaphoreTake(sysState.mutex, portMAX_DELAY);
+    sysState.inputs = localInputs;
+    sysState.rotation = localRotation;
+    xSemaphoreGive(sysState.mutex);
     __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
     __atomic_store_n(&notePlayed, localNotePlayed, __ATOMIC_RELAXED);
   }
@@ -151,13 +187,13 @@ void displayUpdateTask(void * pvParameters){
 
     u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font
     u8g2.drawStr(2, 10, "Music Synth");  // write something to the internal memory
-    // u8g2.setCursor(2, 20);
+    u8g2.setCursor(2, 20);
 
-    // xSemaphoreTake(sysState.mutex, portMAX_DELAY);
-    // u8g2.print(sysState.inputs.to_ulong(), HEX);
-    // xSemaphoreGive(sysState.mutex);
+    xSemaphoreTake(sysState.mutex, portMAX_DELAY);
+    u8g2.print(sysState.rotation);
+    xSemaphoreGive(sysState.mutex);
 
-    u8g2.drawStr(2, 20, localNotePlayed);
+    u8g2.drawStr(2, 30, localNotePlayed);
 
     u8g2.sendBuffer();          // transfer internal memory to the display
 
@@ -218,7 +254,7 @@ void setup() {
   xTaskCreate(
     scanKeysTask,		/* Function that implements the task */
     "scanKeys",		/* Text name for the task */
-    64,      		/* Stack size in words, not bytes */
+    256,      		/* Stack size in words, not bytes */
     NULL,			/* Parameter passed into the task */
     2,			/* Task priority */
     &scanKeysHandle /* Pointer to store the task handle */
