@@ -7,7 +7,6 @@
 
 class Knob : public SysState {
 public:
-    // Other member functions
     uint8_t getRotationISR();
     uint8_t getRotation();
     void updateRotation(std::string BA_curr);

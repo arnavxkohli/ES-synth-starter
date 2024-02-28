@@ -7,45 +7,9 @@
 #include <string>
 #include <cstring>
 #include "Knob.h"
-#include "globals.h"
+#include "Globals.h"
 #include "RX_Message.h"
 #include <ES_CAN.h>
-
-//Constants
-const uint32_t interval = 100; //Display update interval
-
-
-//Pin definitions
-//Row select and enable
-const int RA0_PIN = D3;
-const int RA1_PIN = D6;
-const int RA2_PIN = D12;
-const int REN_PIN = A5;
-
-//Matrix input and output
-const int C0_PIN = A2;
-const int C1_PIN = D9;
-const int C2_PIN = A6;
-const int C3_PIN = D1;
-const int OUT_PIN = D11;
-
-//Audio analogue out
-const int OUTL_PIN = A4;
-const int OUTR_PIN = A3;
-
-//Joystick analogue in
-const int JOYY_PIN = A0;
-const int JOYX_PIN = A1;
-
-//Output multiplexer bits
-const int DEN_BIT = 3;
-const int DRST_BIT = 4;
-const int HKOW_BIT = 5;
-const int HKOE_BIT = 6;
-
-// The step sizes maybe needed in other modules - make sure global variables are in the right place.
-
-volatile uint32_t currentStepSize = 0;
 
 struct {
   std::bitset<32> inputs;
@@ -135,10 +99,6 @@ void scanKeysTask(void * pvParameters) {
 
     uint32_t localCurrentStepSize = 0;
 
-    /*
-    You can potentially define a local inputs variable, which would carry the state of the keyboard matrix and also be used to play the note. The lock can then be acquired at the end of this function, just to assign sysState.inputs the value of your local array using memcpy or std::copy(). The semaphore is not used yet, because inputs is never read by the displayUpdate thread.
-    */
-
     xSemaphoreTake(sysState.mutex, portMAX_DELAY);
     std::bitset<32> localInputs = sysState.inputs;
     const char* localNotePlayed = sysState.notePlayed;
@@ -178,6 +138,7 @@ void scanKeysTask(void * pvParameters) {
     xSemaphoreGive(sysState.mutex);
 
     // ------- UNCOMMENT THIS LATER -------
+    // Need to ask why the receive queue implementation is wrong here.
     __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
     // ------- UNCOMMENT THIS LATER -------
   }
@@ -217,7 +178,7 @@ void displayUpdateTask(void * pvParameters){
   }
 }
 
-void decodeTask(void* pvParameters){
+void CAN_RX_Task(void* pvParameters){
   uint8_t local_RX[8];
 
   while(1){
@@ -285,7 +246,7 @@ void setup() {
 
   TaskHandle_t scanKeysHandle = NULL;
   TaskHandle_t displayUpdateHandle = NULL;
-  TaskHandle_t decodeTaskHandle = NULL;
+  TaskHandle_t CAN_RXHandle = NULL;
   TaskHandle_t CAN_TXHandle = NULL;
 
   xTaskCreate(
@@ -307,12 +268,12 @@ void setup() {
   );
 
   xTaskCreate(
-    decodeTask,
-    "decoreTask",
+    CAN_RX_Task,
+    "CAN_RX_Task",
     64,
     NULL,
     1,
-    &decodeTaskHandle
+    &CAN_RXHandle
   );
 
   xTaskCreate(
