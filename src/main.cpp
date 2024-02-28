@@ -4,7 +4,9 @@
 #include <cmath>
 #include <STM32FreeRTOS.h>
 #include <string>
+#include <cstring>
 #include "Knob.h"
+#include <ES_CAN.h>
 
 //Constants
 const uint32_t interval = 100; //Display update interval
@@ -100,16 +102,25 @@ void sampleISR(){
 
   int32_t Vout = (phaseAcc >> 24) - 128;
 
-
   // localRotation used for volume before or after the 128?
   Vout = Vout >> (8 - localRotation);
 
   analogWrite(OUTR_PIN, Vout + 128);
 }
 
+// void CAN_RX_ISR (void) {
+// 	uint8_t RX_Message_ISR[8];
+// 	uint32_t ID;
+// 	CAN_RX(ID, RX_Message_ISR);
+// 	xQueueSendFromISR(msgInQ, RX_Message_ISR, NULL);
+// }
+
 void scanKeysTask(void * pvParameters) {
   const TickType_t xFrequency = 20/portTICK_PERIOD_MS;
   TickType_t xLastWakeTime = xTaskGetTickCount();
+  std::bitset<32> previousInputs;
+  uint8_t TX_Message[8] = {0};
+  TX_Message[1] = 4; // Octave to be changed later - try auto assigning this.
 
   while(1){
     vTaskDelayUntil( &xLastWakeTime, xFrequency );
@@ -139,8 +150,19 @@ void scanKeysTask(void * pvParameters) {
       if(localInputs[i]){
         localCurrentStepSize = stepSizes[i];
         localNotePlayed = notes[i];
+        TX_Message[2] = i;
+        if(!previousInputs[i]){
+          TX_Message[0] = 'P';
+        }
+      }
+      else if (previousInputs[i]) {
+        TX_Message[0] = 'R';
       }
     }
+
+    CAN_TX(0x123, TX_Message);
+
+    previousInputs = localInputs;
 
     xSemaphoreTake(sysState.mutex, portMAX_DELAY);
     sysState.inputs = localInputs;
@@ -154,9 +176,13 @@ void scanKeysTask(void * pvParameters) {
 void displayUpdateTask(void * pvParameters){
   const TickType_t xFrequency = 100/portTICK_PERIOD_MS;
   TickType_t xLastWakeTime = xTaskGetTickCount();
+  uint32_t ID;
+  uint8_t RX_Message[8]={0};
 
   while(1){
     vTaskDelayUntil( &xLastWakeTime, xFrequency );
+    while (CAN_CheckRXLevel())
+	    CAN_RX(ID, RX_Message);
 
     //Update display
     u8g2.clearBuffer();         // clear the internal memory
@@ -167,9 +193,13 @@ void displayUpdateTask(void * pvParameters){
 
     u8g2.print(Knob3.getRotation());
 
-    xSemaphoreTake(sysState.mutex, portMAX_DELAY);
-    u8g2.drawStr(2, 30, sysState.notePlayed);
-    xSemaphoreGive(sysState.mutex);
+    // xSemaphoreTake(sysState.mutex, portMAX_DELAY);
+    // u8g2.drawStr(2, 30, sysState.notePlayed);
+    // xSemaphoreGive(sysState.mutex);
+    u8g2.setCursor(66,30);
+    u8g2.print((char) RX_Message[0]);
+    u8g2.print(RX_Message[1]);
+    u8g2.print(RX_Message[2]);
 
     u8g2.sendBuffer();          // transfer internal memory to the display
 
@@ -215,8 +245,13 @@ void setup() {
   sampleTimer->attachInterrupt(sampleISR);
   sampleTimer->resume();
 
+  CAN_Init(true);
+  setCANFilter(0x123,0x7ff);
+  CAN_Start();
+
   TaskHandle_t scanKeysHandle = NULL;
   TaskHandle_t displayUpdateHandle = NULL;
+  TaskHandle_t decodeTaskHandle = NULL;
 
   xTaskCreate(
     displayUpdateTask, /* Function that implements the task */
