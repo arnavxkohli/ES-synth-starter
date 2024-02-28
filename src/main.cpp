@@ -58,6 +58,9 @@ struct {
 
 Knob Knob3;
 QueueHandle_t msgInQ;
+QueueHandle_t msgOutQ;
+
+SemaphoreHandle_t CAN_TX_Semaphore;
 
 //Display driver object
 U8G2_SSD1305_128X32_NONAME_F_HW_I2C u8g2(U8G2_R0);
@@ -118,6 +121,10 @@ void CAN_RX_ISR (void) {
 	xQueueSendFromISR(msgInQ, RX_Message_ISR, NULL);
 }
 
+void CAN_TX_ISR (void) {
+	xSemaphoreGiveFromISR(CAN_TX_Semaphore, NULL);
+}
+
 void scanKeysTask(void * pvParameters) {
   const TickType_t xFrequency = 20/portTICK_PERIOD_MS;
   TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -163,7 +170,7 @@ void scanKeysTask(void * pvParameters) {
       }
     }
 
-    CAN_TX(0x123, TX_Message);
+    xQueueSend( msgOutQ, TX_Message, portMAX_DELAY);
 
     previousInputs = localInputs;
 
@@ -173,7 +180,7 @@ void scanKeysTask(void * pvParameters) {
     xSemaphoreGive(sysState.mutex);
 
     // ------- UNCOMMENT THIS LATER -------
-    //__atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
+    __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
     // ------- UNCOMMENT THIS LATER -------
   }
 }
@@ -232,6 +239,16 @@ void decodeTask(void* pvParameters){
   }
 }
 
+void CAN_TX_Task (void * pvParameters) {
+	uint8_t msgOut[8];
+	while (1) {
+		xQueueReceive(msgOutQ, msgOut, portMAX_DELAY);
+		xSemaphoreTake(CAN_TX_Semaphore, portMAX_DELAY);
+		CAN_TX(0x123, msgOut);
+    xSemaphoreGive(CAN_TX_Semaphore);
+	}
+}
+
 void setup() {
   // put your setup code here, to run once:
 
@@ -263,6 +280,7 @@ void setup() {
   Serial.begin(9600);
 
   msgInQ = xQueueCreate(36,8);
+  msgOutQ = xQueueCreate(36,8);
 
   TIM_TypeDef *Instance = TIM1;
   HardwareTimer *sampleTimer = new HardwareTimer(Instance);
@@ -274,11 +292,13 @@ void setup() {
   CAN_Init(true);
   setCANFilter(0x123,0x7ff);
   CAN_RegisterRX_ISR(CAN_RX_ISR);
+  CAN_RegisterTX_ISR(CAN_TX_ISR);
   CAN_Start();
 
   TaskHandle_t scanKeysHandle = NULL;
   TaskHandle_t displayUpdateHandle = NULL;
   TaskHandle_t decodeTaskHandle = NULL;
+  TaskHandle_t CAN_TXHandle = NULL;
 
   xTaskCreate(
     displayUpdateTask, /* Function that implements the task */
@@ -307,7 +327,17 @@ void setup() {
     &decodeTaskHandle
   );
 
+  xTaskCreate(
+    CAN_TX_Task,
+    "CAN_TX_Task",
+    64,
+    NULL,
+    1,
+    &CAN_TXHandle
+  );
+
   sysState.mutex = xSemaphoreCreateMutex();
+  CAN_TX_Semaphore = xSemaphoreCreateCounting(3,3);
 
   vTaskStartScheduler();
 }
