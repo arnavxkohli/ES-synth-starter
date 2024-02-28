@@ -2,8 +2,8 @@
 #define KNOB_HPP
 
 #include <string>
-#include <STM32FreeRTOS.h>
 #include "SysState.h"
+#include <STM32FreeRTOS.h>
 
 class Knob : public SysState {
 public:

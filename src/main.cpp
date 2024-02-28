@@ -7,6 +7,8 @@
 #include <string>
 #include <cstring>
 #include "Knob.h"
+#include "globals.h"
+#include "RX_Message.h"
 #include <ES_CAN.h>
 
 //Constants
@@ -41,11 +43,7 @@ const int DRST_BIT = 4;
 const int HKOW_BIT = 5;
 const int HKOE_BIT = 6;
 
-const uint32_t stepSizes [] = {51149155, 54077542, 57396381, 60715219, 64424509,
-68133799, 72233540, 76528508, 81018701, 85899345, 90975216, 96441538};
-
-const char* notes[] = {"C", "C#", "D", "D#", "E", "F",
-                       "F#", "G", "G#", "A", "A#", "B"};
+// The step sizes maybe needed in other modules - make sure global variables are in the right place.
 
 volatile uint32_t currentStepSize = 0;
 
@@ -53,10 +51,10 @@ struct {
   std::bitset<32> inputs;
   const char* notePlayed = "Play a note...";
   SemaphoreHandle_t mutex;
-  uint8_t RX_Message[8]={0};
 } sysState;
 
 Knob Knob3;
+RX_Message rxMessage;
 QueueHandle_t msgInQ;
 QueueHandle_t msgOutQ;
 
@@ -189,6 +187,7 @@ void displayUpdateTask(void * pvParameters){
   const TickType_t xFrequency = 100/portTICK_PERIOD_MS;
   TickType_t xLastWakeTime = xTaskGetTickCount();
   uint32_t ID;
+  uint8_t localRX[8];
 
   while(1){
     vTaskDelayUntil( &xLastWakeTime, xFrequency );
@@ -205,12 +204,11 @@ void displayUpdateTask(void * pvParameters){
     // xSemaphoreTake(sysState.mutex, portMAX_DELAY);
     // u8g2.drawStr(2, 30, sysState.notePlayed);
     // xSemaphoreGive(sysState.mutex);
-    xSemaphoreTake(sysState.mutex, portMAX_DELAY);
+    memcpy(localRX, rxMessage.getRX_Message(), 8);
     u8g2.setCursor(66,30);
-    u8g2.print((char) sysState.RX_Message[0]);
-    u8g2.print(sysState.RX_Message[1]);
-    u8g2.print(sysState.RX_Message[2]);
-    xSemaphoreGive(sysState.mutex);
+    u8g2.print((char) localRX[0]);
+    u8g2.print(localRX[1]);
+    u8g2.print(localRX[2]);
 
     u8g2.sendBuffer();          // transfer internal memory to the display
 
@@ -221,21 +219,11 @@ void displayUpdateTask(void * pvParameters){
 
 void decodeTask(void* pvParameters){
   uint8_t local_RX[8];
-  uint32_t localCurrentStepSize = 0;
 
   while(1){
     xQueueReceive(msgInQ, local_RX, portMAX_DELAY);
-    if(local_RX[0] == 'R'){
-      localCurrentStepSize = 0;
-    } else if(local_RX[0] == 'P') {
-      localCurrentStepSize = (stepSizes[local_RX[2]] << local_RX[1]) >> 4;
-    }
-
-    __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
-
-    xSemaphoreTake(sysState.mutex, portMAX_DELAY);
-    memcpy(sysState.RX_Message, local_RX, sizeof(local_RX));
-    xSemaphoreGive(sysState.mutex);
+    rxMessage.receiveMessage(local_RX);
+    __atomic_store_n(&currentStepSize, rxMessage.getStepSize(), __ATOMIC_RELAXED);
   }
 }
 
