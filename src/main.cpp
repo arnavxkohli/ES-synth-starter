@@ -53,11 +53,11 @@ struct {
   std::bitset<32> inputs;
   const char* notePlayed = "Play a note...";
   SemaphoreHandle_t mutex;
+  uint8_t RX_Message[8]={0};
 } sysState;
 
 Knob Knob3;
 QueueHandle_t msgInQ;
-uint8_t RX_Message[8]={0};
 
 //Display driver object
 U8G2_SSD1305_128X32_NONAME_F_HW_I2C u8g2(U8G2_R0);
@@ -172,7 +172,9 @@ void scanKeysTask(void * pvParameters) {
     sysState.notePlayed = localNotePlayed;
     xSemaphoreGive(sysState.mutex);
 
-    __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
+    // ------- UNCOMMENT THIS LATER -------
+    //__atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
+    // ------- UNCOMMENT THIS LATER -------
   }
 }
 
@@ -196,10 +198,12 @@ void displayUpdateTask(void * pvParameters){
     // xSemaphoreTake(sysState.mutex, portMAX_DELAY);
     // u8g2.drawStr(2, 30, sysState.notePlayed);
     // xSemaphoreGive(sysState.mutex);
+    xSemaphoreTake(sysState.mutex, portMAX_DELAY);
     u8g2.setCursor(66,30);
-    u8g2.print((char) RX_Message[0]);
-    u8g2.print(RX_Message[1]);
-    u8g2.print(RX_Message[2]);
+    u8g2.print((char) sysState.RX_Message[0]);
+    u8g2.print(sysState.RX_Message[1]);
+    u8g2.print(sysState.RX_Message[2]);
+    xSemaphoreGive(sysState.mutex);
 
     u8g2.sendBuffer();          // transfer internal memory to the display
 
@@ -209,8 +213,22 @@ void displayUpdateTask(void * pvParameters){
 }
 
 void decodeTask(void* pvParameters){
+  uint8_t local_RX[8];
+  uint32_t localCurrentStepSize = 0;
+
   while(1){
-    xQueueReceive(msgInQ, RX_Message, portMAX_DELAY);
+    xQueueReceive(msgInQ, local_RX, portMAX_DELAY);
+    if(local_RX[0] == 'R'){
+      localCurrentStepSize = 0;
+    } else {
+      localCurrentStepSize = (stepSizes[local_RX[2]] << local_RX[1]) >> 4;
+    }
+
+    __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
+
+    xSemaphoreTake(sysState.mutex, portMAX_DELAY);
+    memcpy(sysState.RX_Message, local_RX, sizeof(local_RX));
+    xSemaphoreGive(sysState.mutex);
   }
 }
 
@@ -276,7 +294,7 @@ void setup() {
     "scanKeys",		/* Text name for the task */
     256,      		/* Stack size in words, not bytes */
     NULL,			/* Parameter passed into the task */
-    1,			/* Task priority */
+    2,			/* Task priority */
     &scanKeysHandle /* Pointer to store the task handle */
   );
 
@@ -285,7 +303,7 @@ void setup() {
     "decoreTask",
     64,
     NULL,
-    2,
+    1,
     &decodeTaskHandle
   );
 
