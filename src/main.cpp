@@ -3,6 +3,7 @@
 #include <bitset>
 #include <cmath>
 #include <STM32FreeRTOS.h>
+#include <cstddef>
 #include <string>
 #include <cstring>
 #include "Knob.h"
@@ -55,6 +56,8 @@ struct {
 } sysState;
 
 Knob Knob3;
+QueueHandle_t msgInQ;
+uint8_t RX_Message[8]={0};
 
 //Display driver object
 U8G2_SSD1305_128X32_NONAME_F_HW_I2C u8g2(U8G2_R0);
@@ -108,12 +111,12 @@ void sampleISR(){
   analogWrite(OUTR_PIN, Vout + 128);
 }
 
-// void CAN_RX_ISR (void) {
-// 	uint8_t RX_Message_ISR[8];
-// 	uint32_t ID;
-// 	CAN_RX(ID, RX_Message_ISR);
-// 	xQueueSendFromISR(msgInQ, RX_Message_ISR, NULL);
-// }
+void CAN_RX_ISR (void) {
+	uint8_t RX_Message_ISR[8];
+	uint32_t ID;
+	CAN_RX(ID, RX_Message_ISR);
+	xQueueSendFromISR(msgInQ, RX_Message_ISR, NULL);
+}
 
 void scanKeysTask(void * pvParameters) {
   const TickType_t xFrequency = 20/portTICK_PERIOD_MS;
@@ -177,12 +180,9 @@ void displayUpdateTask(void * pvParameters){
   const TickType_t xFrequency = 100/portTICK_PERIOD_MS;
   TickType_t xLastWakeTime = xTaskGetTickCount();
   uint32_t ID;
-  uint8_t RX_Message[8]={0};
 
   while(1){
     vTaskDelayUntil( &xLastWakeTime, xFrequency );
-    while (CAN_CheckRXLevel())
-	    CAN_RX(ID, RX_Message);
 
     //Update display
     u8g2.clearBuffer();         // clear the internal memory
@@ -205,6 +205,12 @@ void displayUpdateTask(void * pvParameters){
 
     //Toggle LED
     digitalToggle(LED_BUILTIN);
+  }
+}
+
+void decodeTask(void* pvParameters){
+  while(1){
+    xQueueReceive(msgInQ, RX_Message, portMAX_DELAY);
   }
 }
 
@@ -238,6 +244,8 @@ void setup() {
   //Initialise UART
   Serial.begin(9600);
 
+  msgInQ = xQueueCreate(36,8);
+
   TIM_TypeDef *Instance = TIM1;
   HardwareTimer *sampleTimer = new HardwareTimer(Instance);
 
@@ -247,6 +255,7 @@ void setup() {
 
   CAN_Init(true);
   setCANFilter(0x123,0x7ff);
+  CAN_RegisterRX_ISR(CAN_RX_ISR);
   CAN_Start();
 
   TaskHandle_t scanKeysHandle = NULL;
@@ -258,7 +267,7 @@ void setup() {
     "displayUpdate", /* Text name for the task */
     256, /* Stack size in words, not bytes */
     NULL, /* Parameter passed into the task */
-    1, /* Task priority */
+    3, /* Task priority */
     &displayUpdateHandle /* Pointer to store the task handle */
   );
 
@@ -267,8 +276,17 @@ void setup() {
     "scanKeys",		/* Text name for the task */
     256,      		/* Stack size in words, not bytes */
     NULL,			/* Parameter passed into the task */
-    2,			/* Task priority */
+    1,			/* Task priority */
     &scanKeysHandle /* Pointer to store the task handle */
+  );
+
+  xTaskCreate(
+    decodeTask,
+    "decoreTask",
+    64,
+    NULL,
+    2,
+    &decodeTaskHandle
   );
 
   sysState.mutex = xSemaphoreCreateMutex();
