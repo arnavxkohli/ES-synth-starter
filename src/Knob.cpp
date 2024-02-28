@@ -1,14 +1,6 @@
 #include "Knob.h"
 #include <STM32FreeRTOS.h>
 
-Knob::Knob(){
-    this->mutex = xSemaphoreCreateMutex();
-}
-
-Knob::~Knob() {
-    vSemaphoreDelete(this->mutex);
-}
-
 uint8_t Knob::getRotationISR(){
     uint8_t rotation = __atomic_load_n(&this->rotation, __ATOMIC_RELAXED);
     return rotation;

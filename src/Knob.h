@@ -3,23 +3,19 @@
 
 #include <string>
 #include <STM32FreeRTOS.h>
+#include "SysState.h"
 
-class Knob {
+class Knob : public SysState {
 public:
-    Knob();  // Constructor
-    ~Knob(); // Destructor
-
     // Other member functions
     uint8_t getRotationISR();
     uint8_t getRotation();
     void updateRotation(std::string BA_curr);
 
 private:
-    // Member variables
-    SemaphoreHandle_t mutex;
     uint8_t rotation;
     std::string BA_prev;
     bool incrementLast;
 };
 
-#endif // KNOB_HPP
+#endif

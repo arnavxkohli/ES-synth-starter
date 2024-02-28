@@ -220,7 +220,7 @@ void decodeTask(void* pvParameters){
     xQueueReceive(msgInQ, local_RX, portMAX_DELAY);
     if(local_RX[0] == 'R'){
       localCurrentStepSize = 0;
-    } else {
+    } else if(local_RX[0] == 'P') {
       localCurrentStepSize = (stepSizes[local_RX[2]] << local_RX[1]) >> 4;
     }
 
@@ -285,7 +285,7 @@ void setup() {
     "displayUpdate", /* Text name for the task */
     256, /* Stack size in words, not bytes */
     NULL, /* Parameter passed into the task */
-    3, /* Task priority */
+    2, /* Task priority */
     &displayUpdateHandle /* Pointer to store the task handle */
   );
 
@@ -294,7 +294,7 @@ void setup() {
     "scanKeys",		/* Text name for the task */
     256,      		/* Stack size in words, not bytes */
     NULL,			/* Parameter passed into the task */
-    2,			/* Task priority */
+    3,			/* Task priority */
     &scanKeysHandle /* Pointer to store the task handle */
   );
 
